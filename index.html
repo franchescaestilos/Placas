@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full bg-slate-900 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Registro de Placas - Escáner Móvil</title>
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome Icons CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Google Fonts Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- OCR Engine: Tesseract.js -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    
+    <!-- Excel Exporter: SheetJS (xlsx) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            500: '#0284c7',
+                            600: '#0369a1',
+                            700: '#035485',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
+
+        /* Viewfinder framing & animation */
+        .scan-overlay {
+            background: rgba(15, 23, 42, 0.65);
+        }
+
+        .scan-box {
+            box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.7);
+            border: 3px solid #38bdf8;
+            border-radius: 12px;
+            position: relative;
+        }
+
+        .scan-line {
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #38bdf8, #818cf8, #38bdf8, transparent);
+            box-shadow: 0 0 15px #38bdf8;
+            position: absolute;
+            width: 100%;
+            top: 0;
+            animation: scanAnimation 2s ease-in-out infinite alternate;
+        }
+
+        @keyframes scanAnimation {
+            0% { top: 5%; }
+            100% { top: 90%; }
+        }
+
+        /* Hide scrollbar for smooth app feeling */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col bg-slate-950 text-slate-100 antialiased select-none overflow-hidden">
+
+    <!-- Top Header -->
+    <header class="bg-slate-900 border-b border-slate-800 px-4 py-3 flex items-center justify-between shrink-0 shadow-md">
+        <div class="flex items-center space-x-2.5">
+            <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-sky-500/20">
+                <i class="fa-solid fa-car-side text-lg"></i>
+            </div>
+            <div>
+                <h1 class="text-base font-bold text-white leading-tight">Registro de Placas</h1>
+                <p class="text-xs text-slate-400 font-medium">Control vehicular móvil</p>
+            </div>
+        </div>
+
+        <!-- Firebase Status Indicator Pill -->
+        <div id="dbStatusBadge" class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+            <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+            <span id="dbStatusText">Conectando...</span>
+        </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 relative overflow-hidden bg-slate-950">
+        
+        <!-- ================= PANTALLA 1: ESCANEAR ================= -->
+        <section id="tabScan" class="h-full flex flex-col overflow-y-auto no-scrollbar p-4 space-y-4 pb-24">
+            
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-100">Registrar vehículo</h2>
+                    <p class="text-xs text-slate-400">Encuadre la placa en la guía para escaneo automático</p>
+                </div>
+                <button id="btnToggleCamera" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg border border-slate-700 flex items-center space-x-1.5 transition">
+                    <i class="fa-solid fa-camera-rotate"></i>
+                    <span id="cameraSwitchText">Cambiar</span>
+                </button>
+            </div>
+
+            <!-- Camera Viewport Container -->
+            <div class="relative w-full aspect-[4/3] max-h-[360px] bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl flex flex-col items-center justify-center">
+                
+                <!-- Live Video Stream -->
+                <video id="webcamVideo" class="absolute inset-0 w-full h-full object-cover hidden" playsinline autoplay muted></video>
+                
+                <!-- Hidden Canvas for frame snapshot & OCR cropping -->
+                <canvas id="snapshotCanvas" class="hidden"></canvas>
+
+                <!-- Initial Idle View -->
+                <div id="cameraIdleState" class="flex flex-col items-center justify-center p-6 text-center space-y-3">
+                    <div class="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center text-slate-500 text-2xl border border-slate-700">
+                        <i class="fa-solid fa-camera"></i>
+                    </div>
+                    <div>
+                        <p class="text-sm font-semibold text-slate-300">Cámara inactiva</p>
+                        <p class="text-xs text-slate-500 max-w-[220px]">Presione el botón inferior para activar la cámara trasera</p>
+                    </div>
+                </div>
+
+                <!-- Bounding Framing Overlay (Shown when camera is active) -->
+                <div id="scanOverlay" class="absolute inset-0 flex items-center justify-center hidden pointer-events-none">
+                    <div class="scan-box w-[82%] h-[38%] max-w-[320px] max-h-[140px] flex items-center justify-center">
+                        <div id="scanLine" class="scan-line hidden"></div>
+                        <!-- Corner Markers -->
+                        <div class="absolute -top-1 -left-1 w-3 h-3 border-t-2 border-l-2 border-sky-400"></div>
+                        <div class="absolute -top-1 -right-1 w-3 h-3 border-t-2 border-r-2 border-sky-400"></div>
+                        <div class="absolute -bottom-1 -left-1 w-3 h-3 border-b-2 border-l-2 border-sky-400"></div>
+                        <div class="absolute -bottom-1 -right-1 w-3 h-3 border-b-2 border-r-2 border-sky-400"></div>
+                        
+                        <span class="text-[10px] font-bold tracking-widest text-sky-300/80 uppercase bg-slate-900/80 px-2 py-0.5 rounded border border-sky-500/30">
+                            COLOCAR PLACA AQUÍ
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Live OCR Status Indicator Overlay -->
+                <div id="ocrSpinner" class="absolute top-3 left-3 hidden px-3 py-1 bg-slate-900/90 backdrop-blur-md rounded-full text-xs font-semibold text-sky-400 border border-sky-500/30 flex items-center space-x-2 shadow-lg">
+                    <i class="fa-solid fa-spinner animate-spin text-sky-400"></i>
+                    <span id="ocrStatusText">Escaneando OCR...</span>
+                </div>
+            </div>
+
+            <!-- Main Trigger Buttons -->
+            <div class="flex space-x-2">
+                <button id="btnStartScan" class="flex-1 py-3.5 px-4 bg-sky-600 active:bg-sky-700 hover:bg-sky-500 text-white font-bold rounded-xl shadow-lg shadow-sky-600/30 flex items-center justify-center space-x-2 text-base transition duration-150">
+                    <i class="fa-solid fa-camera text-lg"></i>
+                    <span>📷 Escanear placa</span>
+                </button>
+                <button id="btnManualSnap" class="hidden px-4 bg-slate-800 hover:bg-slate-700 active:bg-slate-900 text-slate-200 font-semibold rounded-xl border border-slate-700 flex items-center justify-center text-sm transition">
+                    <i class="fa-solid fa-bolt text-amber-400 mr-1.5"></i>
+                    <span>Capturar</span>
+                </button>
+            </div>
+
+            <!-- Detection Result Box -->
+            <div id="resultCard" class="hidden bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3.5 shadow-xl transition-all duration-300">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                    <div class="flex items-center space-x-2">
+                        <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+                        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">PLACA DETECTADA</h3>
+                    </div>
+                    <span id="confidenceTag" class="text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                        100% verificado
+                    </span>
+                </div>
+
+                <!-- Editable Plate Input -->
+                <div>
+                    <label for="plateInput" class="block text-xs text-slate-400 mb-1 font-medium">Verificar / Corregir número de placa:</label>
+                    <div class="relative">
+                        <input type="text" id="plateInput" uppercase placeholder="ABC-123" 
+                               class="w-full bg-slate-950 border-2 border-sky-500/60 focus:border-sky-400 rounded-xl px-4 py-3 text-2xl font-black text-center tracking-widest text-white uppercase font-mono shadow-inner outline-none transition">
+                        <button id="btnClearPlate" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 p-1">
+                            <i class="fa-solid fa-circle-xmark text-lg"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Action buttons for Save & Rescan -->
+                <div class="grid grid-cols-2 gap-2.5 pt-1">
+                    <button id="btnRescan" class="py-3 px-3 bg-slate-800 hover:bg-slate-700 active:bg-slate-900 text-slate-300 font-semibold text-sm rounded-xl border border-slate-700 flex items-center justify-center space-x-1.5 transition">
+                        <i class="fa-solid fa-arrows-rotate"></i>
+                        <span>Re-escanear</span>
+                    </button>
+                    <button id="btnSavePlate" class="py-3 px-3 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-sm rounded-xl shadow-lg shadow-emerald-600/30 flex items-center justify-center space-x-1.5 transition">
+                        <i class="fa-solid fa-floppy-disk"></i>
+                        <span>Guardar placa</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Feedback Toast Message Box -->
+            <div id="toastNotification" class="hidden p-3.5 rounded-xl text-xs font-semibold flex items-center space-x-2.5 border transition-all duration-300">
+                <i id="toastIcon" class="text-base"></i>
+                <span id="toastMessage" class="flex-1 leading-snug"></span>
+            </div>
+
+        </section>
+
+        <!-- ================= PANTALLA 2: ESCANEADOS ================= -->
+        <section id="tabHistory" class="h-full flex flex-col hidden p-4 space-y-3.5 pb-24 overflow-hidden">
+            
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-bold text-slate-100">Placas escaneadas</h2>
+                    <p class="text-xs text-slate-400">Historial de vehículos registrados en la base de datos</p>
+                </div>
+                <button id="btnExportExcel" class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/20 flex items-center space-x-1.5 transition">
+                    <i class="fa-solid fa-file-excel text-sm"></i>
+                    <span>📥 Descargar Excel</span>
+                </button>
+            </div>
+
+            <!-- Search Bar & Counter Bar -->
+            <div class="space-y-2">
+                <div class="relative">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-sm"></i>
+                    <input type="text" id="searchInput" placeholder="Buscar placa (ej: ABC-123)..." 
+                           class="w-full bg-slate-900 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 font-mono uppercase">
+                </div>
+
+                <div class="flex items-center justify-between px-1">
+                    <span id="totalBadge" class="text-xs font-bold text-sky-400 bg-sky-500/10 px-2.5 py-1 rounded-full border border-sky-500/20">
+                        Total de placas: 0
+                    </span>
+                    <button id="btnRefreshList" class="text-xs text-slate-400 hover:text-sky-400 flex items-center space-x-1 transition">
+                        <i class="fa-solid fa-rotate text-[11px]"></i>
+                        <span>Actualizar</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Records List Scrollable Container -->
+            <div id="recordsContainer" class="flex-1 overflow-y-auto no-scrollbar space-y-2 pr-0.5">
+                <!-- Records injected dynamically -->
+                <div class="flex flex-col items-center justify-center py-12 text-slate-500 space-y-2">
+                    <i class="fa-solid fa-spinner animate-spin text-2xl text-sky-500"></i>
+                    <p class="text-xs">Cargando registros de Firebase...</p>
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <!-- Fixed Bottom Mobile Navigation Bar -->
+    <nav class="fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-lg border-t border-slate-800 px-6 py-2.5 flex items-center justify-around z-40 shadow-2xl">
+        
+        <button id="navBtnScan" class="flex flex-col items-center space-y-1 text-sky-400 font-bold transition">
+            <div class="p-1 rounded-lg bg-sky-500/10 text-sky-400">
+                <i class="fa-solid fa-camera-retro text-xl"></i>
+            </div>
+            <span class="text-[11px] font-semibold">📷 Escanear</span>
+        </button>
+
+        <div class="h-6 w-[1px] bg-slate-800"></div>
+
+        <button id="navBtnHistory" class="flex flex-col items-center space-y-1 text-slate-400 hover:text-slate-200 font-medium transition">
+            <div class="p-1 rounded-lg text-slate-400">
+                <i class="fa-solid fa-list-check text-xl"></i>
+            </div>
+            <span class="text-[11px] font-semibold">📋 Escaneados</span>
+        </button>
+
+    </nav>
+
+    <!-- Duplicate Warning Modal -->
+    <div id="duplicateModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 max-w-sm w-full space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div class="flex items-center space-x-3 text-amber-400">
+                <div class="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center shrink-0 border border-amber-500/20">
+                    <i class="fa-solid fa-triangle-exclamation text-xl"></i>
+                </div>
+                <div>
+                    <h3 class="text-base font-bold text-white leading-tight">Placa registrada anteriormente</h3>
+                    <p class="text-xs text-amber-400/90 font-medium">Atención: Duplicado encontrado</p>
+                </div>
+            </div>
+
+            <div class="bg-slate-950 rounded-xl p-3 border border-slate-800 text-xs space-y-1.5">
+                <p class="text-slate-400">La placa <strong id="dupPlateName" class="text-sky-400 font-mono text-sm">ABC-123</strong> ya existe en la base de datos.</p>
+                <div class="pt-1 text-[11px] text-slate-400 flex items-center space-x-1.5">
+                    <i class="fa-regular fa-clock text-slate-500"></i>
+                    <span>Registro anterior: <strong id="dupPlateTime" class="text-slate-200">01/10/2026 — 09:35 a. m.</strong></span>
+                </div>
+            </div>
+
+            <p class="text-xs text-slate-400">¿Desea registrar de todos modos este vehículo nuevamente?</p>
+
+            <div class="grid grid-cols-2 gap-2 pt-1">
+                <button id="btnCancelDuplicate" class="py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl border border-slate-700 transition">
+                    Cancelar
+                </button>
+                <button id="btnConfirmDuplicate" class="py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-xl shadow-md shadow-amber-600/20 transition">
+                    Sí, guardar de nuevo
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="deleteModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 hidden">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 max-w-sm w-full space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+            <div class="flex items-center space-x-3 text-rose-400">
+                <div class="w-10 h-10 rounded-full bg-rose-500/10 flex items-center justify-center shrink-0 border border-rose-500/20">
+                    <i class="fa-solid fa-trash-can text-xl"></i>
+                </div>
+                <div>
+                    <h3 class="text-base font-bold text-white leading-tight">¿Eliminar esta placa?</h3>
+                    <p class="text-xs text-rose-400/90 font-medium">Esta acción no se puede deshacer.</p>
+                </div>
+            </div>
+
+            <div class="bg-slate-950 rounded-xl p-3 border border-slate-800 text-center">
+                <span id="deleteModalPlate" class="text-xl font-mono font-black text-white tracking-widest uppercase"></span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2 pt-1">
+                <button id="btnCancelDelete" class="py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl border border-slate-700 transition">
+                    Cancelar
+                </button>
+                <button id="btnConfirmDelete" class="py-2.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-md shadow-rose-600/20 flex items-center justify-center space-x-1.5 transition">
+                    <i class="fa-solid fa-trash-can"></i>
+                    <span>Eliminar</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Application Logic Scripts -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, deleteDoc, getDocs, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    <!-- Application Logic Scripts -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, getDocs, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // =========================================================================
+        // CONFIGURACIÓN DE FIREBASE
+        // Sustituya los valores de este objeto si utiliza su propio proyecto de Firebase
+        // =========================================================================
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "AIzaSyDemoKeyReplaceWithYourOwnAppKeyHere",
+            authDomain: "registro-placas-demo.firebaseapp.com",
+            projectId: "registro-placas-demo",
+            storageBucket: "registro-placas-demo.appspot.com",
+            messagingSenderId: "1234567890",
+            appId: "1:1234567890:web:demo123456"
+        };
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'registro-placas-app';
+
+        // Variables globales de estado
+        let app, db, auth;
+        let currentUser = null;
+        let isFirebaseAvailable = false;
+        let localRecords = []; // Fallback & in-memory cache
+        let mediaStream = null;
+        let scanInterval = null;
+        let isScanningOCR = false;
+        let currentFacingMode = 'environment'; // Cámara trasera por defecto
+        let pendingSavePlateData = null;
+        let pendingDeleteId = null;
+        let pendingDeletePlate = null;
+
+        async function initFirebase() {
+            const dbStatusBadge = document.getElementById('dbStatusBadge');
+            const dbStatusText = document.getElementById('dbStatusText');
+
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // Authenticate user
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                currentUser = auth.currentUser;
+                isFirebaseAvailable = true;
+
+                dbStatusBadge.className = "flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+                dbStatusText.textContent = "Firebase Activo";
+
+                // Escuchar cambios en la colección en tiempo real
+                subscribeToRecords();
+
+            } catch (err) {
+                console.warn("Firebase falló o está en modo offline/demostración. Usando almacenamiento local:", err);
+                isFirebaseAvailable = false;
+                
+                dbStatusBadge.className = "flex items-center space-x-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20";
+                dbStatusText.textContent = "Modo Local (Offline)";
+
+                loadLocalBackup();
+            }
+        }
+
+        function getPlacasCollectionRef() {
+            // Path obligatorio de acuerdo con Rule 1: /artifacts/{appId}/public/data/placas
+            return collection(db, 'artifacts', appId, 'public', 'data', 'placas');
+        }
+
+        function subscribeToRecords() {
+            if (!isFirebaseAvailable || !db) return;
+
+            try {
+                const colRef = getPlacasCollectionRef();
+                // Rule 2: Fetch standard collection and sort in memory
+                onSnapshot(colRef, (snapshot) => {
+                    const records = [];
+                    snapshot.forEach((doc) => {
+                        records.push({ id: doc.id, ...doc.data() });
+                    });
+
+                    // Sort descending by timestamp or created date
+                    records.sort((a, b) => {
+                        const tA = a.timestamp?.seconds || a.createdMs || 0;
+                        const tB = b.timestamp?.seconds || b.createdMs || 0;
+                        return tB - tA;
+                    });
+
+                    localRecords = records;
+                    renderRecordsList(localRecords);
+                    saveToLocalStorageBackup(records);
+                }, (error) => {
+                    console.error("Error al escuchar Firestore:", error);
+                    showToast("Error de conexión con Firebase. Usando copia local.", "error");
+                });
+            } catch (error) {
+                console.error("Error suscribiendo a registros:", error);
+            }
+        }
+
+        function saveToLocalStorageBackup(records) {
+            try {
+                localStorage.setItem('reg_placas_backup', JSON.stringify(records));
+            } catch (e) {}
+        }
+
+        function loadLocalBackup() {
+            try {
+                const stored = localStorage.getItem('reg_placas_backup');
+                if (stored) {
+                    localRecords = JSON.parse(stored);
+                }
+            } catch (e) {
+                localRecords = [];
+            }
+            renderRecordsList(localRecords);
+        }
+
+        // =========================================================================
+        // CONTROL DE CÁMARA Y OCR (Tesseract.js)
+        // =========================================================================
+        const webcamVideo = document.getElementById('webcamVideo');
+        const cameraIdleState = document.getElementById('cameraIdleState');
+        const scanOverlay = document.getElementById('scanOverlay');
+        const scanLine = document.getElementById('scanLine');
+        const ocrSpinner = document.getElementById('ocrSpinner');
+        const ocrStatusText = document.getElementById('ocrStatusText');
+
+        async function startCamera() {
+            stopCamera(); // Limpiar streams anteriores
+
+            const constraints = {
+                video: {
+                    facingMode: currentFacingMode,
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                },
+                audio: false
+            };
+
+            try {
+                mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+                webcamVideo.srcObject = mediaStream;
+                webcamVideo.classList.remove('hidden');
+                cameraIdleState.classList.add('hidden');
+                scanOverlay.classList.remove('hidden');
+                scanLine.classList.remove('hidden');
+                document.getElementById('btnManualSnap').classList.remove('hidden');
+                document.getElementById('btnStartScan').innerHTML = `<i class="fa-solid fa-stop text-lg"></i><span>Detener cámara</span>`;
+                
+                showToast("Cámara activada. Apunte a la placa.", "info");
+
+                // Iniciar escaneo automático OCR periódico
+                startAutoOCRScanner();
+
+            } catch (err) {
+                console.error("Error accediendo a la cámara:", err);
+                // Fallback: probar sin restricción estricta de facingMode
+                try {
+                    mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    webcamVideo.srcObject = mediaStream;
+                    webcamVideo.classList.remove('hidden');
+                    cameraIdleState.classList.add('hidden');
+                    scanOverlay.classList.remove('hidden');
+                    scanLine.classList.remove('hidden');
+                    document.getElementById('btnStartScan').innerHTML = `<i class="fa-solid fa-stop text-lg"></i><span>Detener cámara</span>`;
+                    startAutoOCRScanner();
+                } catch (fallbackErr) {
+                    showToast("No se pudo acceder a la cámara. Permita los permisos en su teléfono.", "error");
+                }
+            }
+        }
+
+        function stopCamera() {
+            if (scanInterval) {
+                clearInterval(scanInterval);
+                scanInterval = null;
+            }
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+            webcamVideo.classList.add('hidden');
+            cameraIdleState.classList.remove('hidden');
+            scanOverlay.classList.add('hidden');
+            scanLine.classList.add('hidden');
+            ocrSpinner.classList.add('hidden');
+            document.getElementById('btnManualSnap').classList.add('hidden');
+            document.getElementById('btnStartScan').innerHTML = `<i class="fa-solid fa-camera text-lg"></i><span>📷 Escanear placa</span>`;
+        }
+
+        function startAutoOCRScanner() {
+            if (scanInterval) clearInterval(scanInterval);
+            // Capturar fotograma cada 1.8 segundos para ahorrar recursos y procesar con Tesseract
+            scanInterval = setInterval(() => {
+                if (!isScanningOCR && webcamVideo.readyState === webcamVideo.HAVE_ENOUGH_DATA) {
+                    processOCRFrame();
+                }
+            }, 1800);
+        }
+
+        async function processOCRFrame() {
+            if (isScanningOCR) return;
+            isScanningOCR = true;
+
+            ocrSpinner.classList.remove('hidden');
+            ocrStatusText.textContent = "Analizando placa...";
+
+            try {
+                const snapshotCanvas = document.getElementById('snapshotCanvas');
+                const ctx = snapshotCanvas.getContext('2d');
+
+                // Recortar la región central donde se ubica el marco rectangular de la placa
+                const vWidth = webcamVideo.videoWidth;
+                const vHeight = webcamVideo.videoHeight;
+
+                if (!vWidth || !vHeight) {
+                    isScanningOCR = false;
+                    ocrSpinner.classList.add('hidden');
+                    return;
+                }
+
+                // Dimensiones del recuadro (Aprox 70% ancho, 30% alto en el centro)
+                const cropWidth = vWidth * 0.70;
+                const cropHeight = vHeight * 0.35;
+                const cropX = (vWidth - cropWidth) / 2;
+                const cropY = (vHeight - cropHeight) / 2;
+
+                snapshotCanvas.width = cropWidth;
+                snapshotCanvas.height = cropHeight;
+
+                // Dibujar solo la región de interés (ROI)
+                ctx.drawImage(webcamVideo, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+
+                // Reconocimiento OCR con Tesseract.js
+                const result = await Tesseract.recognize(snapshotCanvas, 'eng', {
+                    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
+                });
+
+                const rawText = result.data.text || '';
+                const detectedPlate = cleanAndValidatePlate(rawText);
+
+                if (detectedPlate && detectedPlate.length >= 5) {
+                    // Vibración móvil al detectar con éxito
+                    if (navigator.vibrate) navigator.vibrate(100);
+
+                    displayDetectedPlate(detectedPlate, Math.round((result.data.confidence || 85)));
+                    stopCamera(); // Detener cámara temporalmente para permitir verificación
+                }
+
+            } catch (err) {
+                console.warn("Error durante OCR:", err);
+            } finally {
+                isScanningOCR = false;
+                ocrSpinner.classList.add('hidden');
+            }
+        }
+
+        function cleanAndValidatePlate(text) {
+            if (!text) return '';
+            
+            // Convertir a mayúsculas y quitar espacios extra
+            let cleaned = text.toUpperCase().replace(/\s+/g, '').replace(/[^A-Z0-9-]/g, '');
+
+            // Si tiene guion al medio, validar
+            if (cleaned.includes('-')) {
+                const parts = cleaned.split('-');
+                if (parts[0].length >= 2 && parts[1].length >= 2) {
+                    return `${parts[0]}-${parts[1]}`;
+                }
+            }
+
+            // Formatos peruanos comunes: ABC123, A1B234, ABC1234 -> Formatear con guion ABC-123
+            if (cleaned.length >= 6) {
+                const alpha = cleaned.substring(0, 3);
+                const num = cleaned.substring(3, 6);
+                return `${alpha}-${num}`;
+            }
+
+            return cleaned;
+        }
+
+        function displayDetectedPlate(plateText, confidence) {
+            const resultCard = document.getElementById('resultCard');
+            const plateInput = document.getElementById('plateInput');
+            const confidenceTag = document.getElementById('confidenceTag');
+
+            plateInput.value = plateText;
+            confidenceTag.textContent = `${confidence}% confiabilidad`;
+            resultCard.classList.remove('hidden');
+
+            // Scroll suave hacia la tarjeta de resultado
+            resultCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // =========================================================================
+        // GUARDADO DE REGISTROS Y VALIDACIONES
+        // =========================================================================
+        async function handleSavePlate(forceDuplicate = false) {
+            const plateInput = document.getElementById('plateInput');
+            let rawValue = plateInput.value.trim().toUpperCase().replace(/\s+/g, '');
+
+            if (!rawValue) {
+                showToast("Por favor ingrese un número de placa válido.", "error");
+                return;
+            }
+
+            // Normalización básica
+            const plate = rawValue;
+
+            // Generar Fecha y Hora local peruana (DD/MM/AAAA - HH:MM a. m. / p. m.)
+            const now = new Date();
+            const fechaStr = now.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+            const horaStr = now.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', hour12: true });
+
+            // Verificar duplicados antes de guardar si no fue forzado explícitamente
+            if (!forceDuplicate) {
+                const existing = localRecords.find(r => r.placa.toUpperCase() === plate);
+                if (existing) {
+                    showDuplicateModal(plate, existing.fecha, existing.hora, {
+                        placa: plate,
+                        fecha: fechaStr,
+                        hora: horaStr
+                    });
+                    return;
+                }
+            }
+
+            // Mostrar estado guardando
+            const btnSave = document.getElementById('btnSavePlate');
+            btnSave.disabled = true;
+            btnSave.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i><span>Guardando...</span>`;
+
+            const recordData = {
+                placa: plate,
+                fecha: fechaStr,
+                hora: horaStr,
+                createdMs: Date.now(),
+                timestamp: isFirebaseAvailable ? serverTimestamp() : new Date()
+            };
+
+            try {
+                if (isFirebaseAvailable && db) {
+                    const colRef = getPlacasCollectionRef();
+                    await addDoc(colRef, recordData);
+                } else {
+                    // Modo Local Fallback
+                    localRecords.unshift({ id: 'loc-' + Date.now(), ...recordData });
+                    saveToLocalStorageBackup(localRecords);
+                    renderRecordsList(localRecords);
+                }
+
+                // Feedback de éxito solicitado: "✓ Placa ABC-123 guardada correctamente"
+                showToast(`✓ Placa ${plate} guardada correctamente`, "success");
+
+                // Resetear interfaz para continuar escaneando rápidamente la siguiente
+                document.getElementById('resultCard').classList.add('hidden');
+                plateInput.value = '';
+                
+                // Reiniciar cámara automáticamente para el siguiente vehículo
+                setTimeout(() => {
+                    startCamera();
+                }, 800);
+
+            } catch (err) {
+                console.error("Error guardando registro:", err);
+                showToast("Error al guardar en Firebase. Intente de nuevo.", "error");
+            } finally {
+                btnSave.disabled = false;
+                btnSave.innerHTML = `<i class="fa-solid fa-floppy-disk"></i><span>Guardar placa</span>`;
+            }
+        }
+
+        function showDuplicateModal(plate, fecha, hora, pendingData) {
+            pendingSavePlateData = pendingData;
+            document.getElementById('dupPlateName').textContent = plate;
+            document.getElementById('dupPlateTime').textContent = `${fecha} — ${hora}`;
+            document.getElementById('duplicateModal').classList.remove('hidden');
+        }
+
+        function hideDuplicateModal() {
+            pendingSavePlateData = null;
+            document.getElementById('duplicateModal').classList.add('hidden');
+        }
+
+        // =========================================================================
+        // ELIMINACIÓN DE PLACAS
+        // =========================================================================
+        window.promptDeleteRecord = function(docId, plateText) {
+            pendingDeleteId = docId;
+            pendingDeletePlate = plateText;
+            document.getElementById('deleteModalPlate').textContent = plateText;
+            document.getElementById('deleteModal').classList.remove('hidden');
+        };
+
+        function hideDeleteModal() {
+            pendingDeleteId = null;
+            pendingDeletePlate = null;
+            document.getElementById('deleteModal').classList.add('hidden');
+        }
+
+        async function confirmDeleteRecord() {
+            if (!pendingDeleteId) return;
+
+            const docId = pendingDeleteId;
+            const plateText = pendingDeletePlate;
+            hideDeleteModal();
+
+            const btnConfirm = document.getElementById('btnConfirmDelete');
+            btnConfirm.disabled = true;
+
+            try {
+                if (isFirebaseAvailable && db) {
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'placas', docId);
+                    await deleteDoc(docRef);
+                } else {
+                    // Modo Local Fallback
+                    localRecords = localRecords.filter(r => r.id !== docId);
+                    saveToLocalStorageBackup(localRecords);
+                    renderRecordsList(localRecords);
+                }
+
+                showToast(`✓ Placa ${plateText} eliminada correctamente`, "success");
+
+            } catch (err) {
+                console.error("Error al eliminar placa de Firebase:", err);
+                showToast(`Error al eliminar la placa ${plateText}`, "error");
+            } finally {
+                btnConfirm.disabled = false;
+            }
+        }
+
+        // =========================================================================
+        // HISTORIAL DE PLACAS ESCANEADAS Y BÚSQUEDA
+        // =========================================================================
+        function renderRecordsList(records) {
+            const container = document.getElementById('recordsContainer');
+            const totalBadge = document.getElementById('totalBadge');
+            const searchInput = document.getElementById('searchInput');
+            const query = (searchInput.value || '').trim().toUpperCase();
+
+            // Filtrar en memoria por término de búsqueda
+            const filtered = records.filter(r => (r.placa || '').toUpperCase().includes(query));
+
+            totalBadge.textContent = `Total de placas: ${records.length}`;
+
+            if (filtered.length === 0) {
+                container.innerHTML = `
+                    <div class="flex flex-col items-center justify-center py-12 text-slate-500 space-y-2">
+                        <i class="fa-solid fa-folder-open text-3xl text-slate-600"></i>
+                        <p class="text-xs font-medium">No se encontraron placas registradas</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = filtered.map((item, idx) => `
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-3.5 flex items-center justify-between shadow-md hover:border-slate-700 transition">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center font-bold text-xs font-mono">
+                            #${records.length - idx}
+                        </div>
+                        <div>
+                            <span class="font-mono text-base font-black tracking-widest text-white uppercase block leading-tight">
+                                ${item.placa}
+                            </span>
+                            <span class="text-xs text-slate-400 font-medium flex items-center space-x-1 mt-0.5">
+                                <i class="fa-regular fa-calendar-check text-slate-500 text-[10px]"></i>
+                                <span>${item.fecha || ''} — ${item.hora || ''}</span>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-1.5">
+                        <button onclick="copyToClipboard('${item.placa}')" class="p-2 text-slate-400 hover:text-sky-400 bg-slate-950/60 rounded-lg border border-slate-800 transition" title="Copiar placa">
+                            <i class="fa-regular fa-copy text-sm"></i>
+                        </button>
+                        <button onclick="promptDeleteRecord('${item.id}', '${item.placa}')" class="px-2.5 py-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/20 bg-slate-950/60 rounded-lg border border-slate-800 transition flex items-center space-x-1.5 text-xs font-semibold" title="Eliminar placa">
+                            <i class="fa-solid fa-trash-can text-sm"></i>
+                            <span class="hidden sm:inline">Eliminar</span>
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        window.copyToClipboard = function(text) {
+            const temp = document.createElement('input');
+            temp.value = text;
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand('copy');
+            document.body.removeChild(temp);
+            showToast(`Placa ${text} copiada al portapapeles`, "info");
+        };
+
+        // =========================================================================
+        // EXPORTACIÓN A EXCEL (.xlsx)
+        // =========================================================================
+        function exportToExcel() {
+            if (!localRecords || localRecords.length === 0) {
+                showToast("No hay registros para exportar a Excel.", "error");
+                return;
+            }
+
+            try {
+                // Preparar datos ordenados para el archivo Excel
+                // Columnas requeridas: N° | Placa | Fecha | Hora
+                const excelData = localRecords.map((r, index) => ({
+                    "N°": index + 1,
+                    "Placa": r.placa,
+                    "Fecha": r.fecha,
+                    "Hora": r.hora
+                }));
+
+                // Crear libro de trabajo con SheetJS
+                const worksheet = XLSX.utils.json_to_sheet(excelData);
+                const workbook = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(workbook, worksheet, "Placas");
+
+                // Auto-ajustar anchos de columnas
+                worksheet['!cols'] = [
+                    { wch: 6 },
+                    { wch: 15 },
+                    { wch: 14 },
+                    { wch: 14 }
+                ];
+
+                // Generar nombre dinámico: registro_placas_YYYY-MM-DD.xlsx
+                const now = new Date();
+                const year = now.getFullYear();
+                const month = String(now.getMonth() + 1).padStart(2, '0');
+                const day = String(now.getDate()).padStart(2, '0');
+                const fileName = `registro_placas_${year}-${month}-${day}.xlsx`;
+
+                // Descargar archivo
+                XLSX.writeFile(workbook, fileName);
+
+                showToast(`Excel descargado correctamente: ${fileName}`, "success");
+
+            } catch (err) {
+                console.error("Error al exportar Excel:", err);
+                showToast("Error al generar el archivo Excel.", "error");
+            }
+        }
+
+        // =========================================================================
+        // INTERFAZ DE USUARIO Y NAVEGACIÓN
+        // =========================================================================
+        function showToast(msg, type = "info") {
+            const toast = document.getElementById('toastNotification');
+            const icon = document.getElementById('toastIcon');
+            const message = document.getElementById('toastMessage');
+
+            toast.className = "p-3.5 rounded-xl text-xs font-semibold flex items-center space-x-2.5 border transition-all duration-300 shadow-lg";
+
+            if (type === "success") {
+                toast.classList.add('bg-emerald-500/10', 'text-emerald-300', 'border-emerald-500/30');
+                icon.className = "fa-solid fa-circle-check text-emerald-400 text-base";
+            } else if (type === "error") {
+                toast.classList.add('bg-rose-500/10', 'text-rose-300', 'border-rose-500/30');
+                icon.className = "fa-solid fa-circle-exclamation text-rose-400 text-base";
+            } else {
+                toast.classList.add('bg-sky-500/10', 'text-sky-300', 'border-sky-500/30');
+                icon.className = "fa-solid fa-circle-info text-sky-400 text-base";
+            }
+
+            message.textContent = msg;
+            toast.classList.remove('hidden');
+
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 4000);
+        }
+
+        function switchTab(target) {
+            const tabScan = document.getElementById('tabScan');
+            const tabHistory = document.getElementById('tabHistory');
+            const navBtnScan = document.getElementById('navBtnScan');
+            const navBtnHistory = document.getElementById('navBtnHistory');
+
+            if (target === 'scan') {
+                tabScan.classList.remove('hidden');
+                tabHistory.classList.add('hidden');
+
+                navBtnScan.className = "flex flex-col items-center space-y-1 text-sky-400 font-bold transition";
+                navBtnScan.querySelector('div').className = "p-1 rounded-lg bg-sky-500/10 text-sky-400";
+
+                navBtnHistory.className = "flex flex-col items-center space-y-1 text-slate-400 hover:text-slate-200 font-medium transition";
+                navBtnHistory.querySelector('div').className = "p-1 rounded-lg text-slate-400";
+            } else {
+                tabScan.classList.add('hidden');
+                tabHistory.classList.remove('hidden');
+
+                navBtnHistory.className = "flex flex-col items-center space-y-1 text-sky-400 font-bold transition";
+                navBtnHistory.querySelector('div').className = "p-1 rounded-lg bg-sky-500/10 text-sky-400";
+
+                navBtnScan.className = "flex flex-col items-center space-y-1 text-slate-400 hover:text-slate-200 font-medium transition";
+                navBtnScan.querySelector('div').className = "p-1 rounded-lg text-slate-400";
+
+                stopCamera(); // Detener cámara para ahorrar batería al ver historial
+                renderRecordsList(localRecords);
+            }
+        }
+
+        // =========================================================================
+        // EVENT LISTENERS DE BOTONES Y CONTROLES
+        // =========================================================================
+        window.addEventListener('load', () => {
+            initFirebase();
+
+            // Tabs
+            document.getElementById('navBtnScan').addEventListener('click', () => switchTab('scan'));
+            document.getElementById('navBtnHistory').addEventListener('click', () => switchTab('history'));
+
+            // Camera toggle / scan
+            document.getElementById('btnStartScan').addEventListener('click', () => {
+                if (mediaStream) {
+                    stopCamera();
+                } else {
+                    startCamera();
+                }
+            });
+
+            document.getElementById('btnToggleCamera').addEventListener('click', () => {
+                currentFacingMode = (currentFacingMode === 'environment') ? 'user' : 'environment';
+                document.getElementById('cameraSwitchText').textContent = currentFacingMode === 'environment' ? 'Trasera' : 'Frontal';
+                if (mediaStream) startCamera();
+            });
+
+            document.getElementById('btnManualSnap').addEventListener('click', () => {
+                processOCRFrame();
+            });
+
+            // Rescan / Save
+            document.getElementById('btnRescan').addEventListener('click', () => {
+                document.getElementById('resultCard').classList.add('hidden');
+                startCamera();
+            });
+
+            document.getElementById('btnSavePlate').addEventListener('click', () => {
+                handleSavePlate(false);
+            });
+
+            document.getElementById('btnClearPlate').addEventListener('click', () => {
+                document.getElementById('plateInput').value = '';
+                document.getElementById('plateInput').focus();
+            });
+
+            // Duplicate Modal Actions
+            document.getElementById('btnCancelDuplicate').addEventListener('click', hideDuplicateModal);
+            document.getElementById('btnConfirmDuplicate').addEventListener('click', () => {
+                hideDuplicateModal();
+                handleSavePlate(true);
+            });
+
+            // Delete Modal Actions
+            document.getElementById('btnCancelDelete').addEventListener('click', hideDeleteModal);
+            document.getElementById('btnConfirmDelete').addEventListener('click', confirmDeleteRecord);
+
+            // Search
+            document.getElementById('searchInput').addEventListener('input', () => {
+                renderRecordsList(localRecords);
+            });
+
+            document.getElementById('btnRefreshList').addEventListener('click', () => {
+                if (isFirebaseAvailable) {
+                    showToast("Sincronizando con Firebase...", "info");
+                    subscribeToRecords();
+                } else {
+                    loadLocalBackup();
+                }
+            });
+
+            // Export Excel
+            document.getElementById('btnExportExcel').addEventListener('click', exportToExcel);
+        });
+    </script>
+</body>
+</html>
