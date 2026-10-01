@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14213d">
+<title>Registro de Placas</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="style.css">
+<!-- Bibliotecas por CDN (se pueden reemplazar por copias locales más adelante) -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="top"><h1>Registro de Placas</h1></header>
+
+<main>
+  <!-- ESCANEAR -->
+  <section id="screen-scan" class="screen active">
+    <div id="idle" class="idle">
+      <p class="hint">Apunta la cámara a la placa y la aplicación la reconocerá automáticamente.</p>
+      <button id="btn-start" class="btn big primary">📷 Escanear placa</button>
+      <button id="btn-manual" class="btn link">Escribir placa manualmente</button>
+    </div>
+
+    <div id="cam" class="cam hidden">
+      <div class="video-wrap" id="video-wrap">
+        <video id="video" playsinline muted autoplay></video>
+        <div class="frame"></div>
+      </div>
+      <p id="status" class="status">Detectando placa...</p>
+      <button id="btn-stop" class="btn secondary">Cerrar cámara</button>
+    </div>
+
+    <div id="result" class="result hidden">
+      <p class="result-title">PLACA DETECTADA</p>
+      <input id="plate-input" type="text" maxlength="10" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Placa">
+      <p class="hint small">Si el texto es incorrecto, corrígelo antes de guardar.</p>
+      <button id="btn-save" class="btn big ok">✓ Guardar placa</button>
+      <button id="btn-retry" class="btn secondary">↻ Escanear nuevamente</button>
+    </div>
+  </section>
+
+  <!-- ESCANEADOS -->
+  <section id="screen-list" class="screen">
+    <h2>📋 Placas escaneadas</h2>
+    <p class="warn">Los registros se almacenan localmente en este dispositivo. Se recomienda descargar periódicamente un respaldo.</p>
+    <input id="search" type="search" placeholder="🔎 Buscar placa..." autocomplete="off">
+    <p id="total" class="total">Total de placas: 0</p>
+    <ul id="list" class="list"></ul>
+
+    <div class="actions">
+      <button id="btn-excel" class="btn secondary">📥 Descargar Excel</button>
+      <button id="btn-backup" class="btn secondary">💾 Crear respaldo</button>
+      <button id="btn-restore" class="btn secondary">📤 Restaurar respaldo</button>
+      <input id="file" type="file" accept=".json,application/json" hidden>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs">
+  <button id="tab-scan" class="tab active">📷<span>Escanear</span></button>
+  <button id="tab-list" class="tab">📋<span>Escaneados</span></button>
+</nav>
+
+<div id="modal" class="modal hidden">
+  <div class="dialog">
+    <h3>¿Eliminar esta placa?</h3>
+    <p id="modal-plate" class="modal-plate"></p>
+    <p>Esta acción no se puede deshacer.</p>
+    <div class="row">
+      <button id="modal-cancel" class="btn secondary">Cancelar</button>
+      <button id="modal-ok" class="btn danger">Eliminar</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden" role="status"></div>
+</body>
+</html>
